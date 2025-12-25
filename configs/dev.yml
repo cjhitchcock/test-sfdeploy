@@ -1,0 +1,4 @@
+database: my_db_dev
+role: DEV_ROLE
+warehouse: small_wh
+schema: public
