@@ -1,180 +1,91 @@
-#!/usr/bin/env python3
-"""
-sql-runner.py
-- Connects to Snowflake using either private-key (preferred) or password auth.
-- Expects environment variables:
-  - SNOWFLAKE_ACCOUNT
-  - SNOWFLAKE_USER
-  - SNOWFLAKE_ROLE (optional)
-  - SNOWFLAKE_WAREHOUSE (optional)
-  - SNOWFLAKE_DATABASE (optional)
-  - SNOWFLAKE_SCHEMA (optional)
-  - SNOWFLAKE_PRIVATE_KEY_BASE64 (base64 of PKCS#8 PEM) OR SNOWFLAKE_PASSWORD
-  - SNOWFLAKE_PRIVATE_KEY_PASSPHRASE (optional)
-Usage:
-  python scripts/sql-runner.py sql/migrations
+"""Snowflake SQL Runner: Execute SQL queries and migrations using private key authentication.
+
+This script streamlines the execution of Snowflake SQL queries and migrations, leveraging private key authentication for robust security.
 """
 
-from pathlib import Path
-import os
-import sys
-import base64
+from snowflake.connector import connect
+from snowflake.connector.errors import ProgrammingError
 import logging
 
-# Minimal logging config (do not log secrets)
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
+# Initialize the logger
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger("sql_runner")
 
-try:
-    import snowflake.connector
-except Exception as e:
-    logger.error("snowflake-connector-python is required. Install with pip.")
-    raise
-
-# cryptography is required for private key loading
-try:
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.backends import default_backend
-except Exception:
-    logger.error("cryptography is required for private-key auth. Install with pip.")
-    raise
-
-
-def _conn_kwargs_from_env():
+def get_conn(account: str, user: str, private_key: str):
     """
-    Gather non-secret connection kwargs from environment; exclude None values.
-    """
-    env = os.environ
-    kw = {
-        "account": env.get("SNOWFLAKE_ACCOUNT"),
-        "user": env.get("SNOWFLAKE_USER"),
-        "role": env.get("SNOWFLAKE_ROLE"),
-        "warehouse": env.get("SNOWFLAKE_WAREHOUSE"),
-        "database": env.get("SNOWFLAKE_DATABASE"),
-        "schema": env.get("SNOWFLAKE_SCHEMA"),
-    }
-    # Remove unset
-    return {k: v for k, v in kw.items() if v}
+    Establishes a Snowflake connection using private key authentication.
 
+    Args:
+        account (str): Snowflake account.
+        user (str): Snowflake username.
+        private_key (str): Private key for authentication.
 
-def _connect_with_private_key(pk_b64: str, pk_passphrase: str = None):
-    """
-    Load a base64-encoded PKCS#8 PEM private key and connect using snowflake.connector.
-    Returns a Snowflake connection object.
+    Returns:
+        connection: Snowflake connection object.
+
+    Raises:
+        ProgrammingError: For connection-related issues.
+        Exception: General exception for other issues.
     """
     try:
-        pk_bytes = base64.b64decode(pk_b64)
-    except Exception as e:
-        logger.error("Failed to base64-decode private key: %s", e)
-        raise
-
-    try:
-        private_key = serialization.load_pem_private_key(
-            pk_bytes,
-            password=(pk_passphrase.encode() if pk_passphrase else None),
-            backend=default_backend(),
+        logger.debug(f"Attempting to connect to account: {account} as user: {user}")
+        conn = connect(
+            account=account,
+            user=user,
+            private_key=private_key
         )
+        logger.debug("Connection established successfully.")
+        return conn
+
+    except ProgrammingError as pe:
+        logger.error("ProgrammingError occurred while connecting.", exc_info=True)
+        logger.error("Please verify the account, user, and private key credentials for Snowflake.")
+        raise pe
     except Exception as e:
-        logger.error("Failed to load private key: %s", e)
-        raise
+        logger.error("An unexpected error occurred during Snowflake connection.", exc_info=True)
+        raise e
 
-    # Export private key bytes in PKCS8 PEM (unencrypted) for the connector
+def run_sql_file(connection, sql_filepath):
+    """
+    Executes a SQL file.
+
+    Args:
+        connection: Snowflake connection object.
+        sql_filepath (str): Path to the SQL file.
+
+    Returns:
+        None
+    """
+    logger.debug(f"Preparing to execute SQL file: {sql_filepath}")
     try:
-        pk_for_connector = private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
+        with open(sql_filepath, 'r') as file:
+            sql = file.read()
+
+        with connection.cursor() as cursor:
+            logger.debug("Executing SQL script...")
+            cursor.execute(sql)
+            logger.debug("SQL script executed successfully.")
     except Exception as e:
-        logger.error("Failed to serialize private key for connector: %s", e)
-        raise
+        logger.error("An error occurred while executing the SQL file.", exc_info=True)
+        raise e
 
-    conn_kwargs = _conn_kwargs_from_env()
-    conn_kwargs["private_key"] = pk_for_connector
-    # Do not include password
-    logger.info("Connecting to Snowflake using private-key auth (user=%s)", conn_kwargs.get("user"))
-    return snowflake.connector.connect(**conn_kwargs)
-
-
-def _connect_with_password(password: str):
-    conn_kwargs = _conn_kwargs_from_env()
-    conn_kwargs["password"] = password
-    logger.info("Connecting to Snowflake using password auth (user=%s)", conn_kwargs.get("user"))
-    return snowflake.connector.connect(**conn_kwargs)
-
-
-def get_conn():
+def run_migrations(connection, migrations):
     """
-    Choose auth method: private-key if SNOWFLAKE_PRIVATE_KEY_BASE64 is present; otherwise password.
-    Raises SystemExit on missing configuration.
+    Executes a series of SQL migration scripts.
+
+    Args:
+        connection: Snowflake connection object.
+        migrations (list): List of SQL file paths in migration order.
+
+    Returns:
+        None
     """
-    env = os.environ
-    account = env.get("SNOWFLAKE_ACCOUNT")
-    user = env.get("SNOWFLAKE_USER")
-    if not account or not user:
-        logger.error("Missing SNOWFLAKE_ACCOUNT or SNOWFLAKE_USER environment variables.")
-        raise SystemExit(1)
-
-    pk_b64 = env.get("SNOWFLAKE_PRIVATE_KEY_BASE64")
-    pk_pass = env.get("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
-    pwd = env.get("SNOWFLAKE_PASSWORD")
-
-    if pk_b64:
+    logger.debug("Starting migrations...")
+    for migration in migrations:
+        logger.debug(f"Starting migration file: {migration}")
         try:
-            return _connect_with_private_key(pk_b64, pk_pass)
-        except Exception:
-            logger.exception("Private-key authentication failed.")
-            raise
-
-    if pwd:
-        try:
-            return _connect_with_password(pwd)
-        except Exception:
-            logger.exception("Password authentication failed.")
-            raise
-
-    logger.error("No SNOWFLAKE_PRIVATE_KEY_BASE64 or SNOWFLAKE_PASSWORD found in environment.")
-    raise SystemExit(1)
-
-
-def run_sql_file(conn, sql_path: Path):
-    sql_text = sql_path.read_text(encoding="utf-8")
-    # Simple split on semicolon; adapt if you store complex statements
-    statements = [s.strip() for s in sql_text.split(";") if s.strip()]
-    cursor = conn.cursor()
-    try:
-        for stmt in statements:
-            logger.info("Executing statement from %s: %.60s", sql_path.name, stmt.replace("\n", " ")[:60])
-            cursor.execute(stmt)
-        conn.commit()
-    finally:
-        cursor.close()
-
-
-def run_migrations(path):
-    p = Path(path)
-    if not p.exists():
-        logger.error("Migration path not found: %s", path)
-        raise SystemExit(1)
-    # Run SQL files in alphabetical order
-    files = sorted([f for f in p.glob("*.sql")])
-    if not files:
-        logger.info("No migrations found in %s", path)
-        return
-    conn = get_conn()
-    try:
-        for f in files:
-            run_sql_file(conn, f)
-    finally:
-        conn.close()
-
-
-def main(argv):
-    if len(argv) < 2:
-        print("Usage: python scripts/sql-runner.py <migrations-dir>")
-        raise SystemExit(2)
-    run_migrations(argv[1])
-
-
-if __name__ == "__main__":
-    main(sys.argv)
+            run_sql_file(connection, migration)
+            logger.debug(f"Migration {migration} completed successfully.")
+        except Exception as e:
+            logger.error(f"Migration {migration} failed.", exc_info=True)
+            raise e
