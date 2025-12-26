@@ -1,0 +1,4 @@
+database: my_db_qa
+role: QA_ROLE
+warehouse: medium_wh
+schema: public

@@ -1,0 +1,3 @@
+# Base/default config values (non-secrets)
+warehouse: small_wh
+schema: public
