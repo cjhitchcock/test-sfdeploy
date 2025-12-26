@@ -1,24 +1,44 @@
-# ARCHITECTURE
+## Monitoring and Logging
 
-This repository implements a GitOps CI/CD pipeline for Snowflake with the following branch model and promotion flow:
+### Azure Key Vault Logging
+To track and audit access to sensitive secrets stored in Azure Key Vault:
 
-- Branches:
-  - feature/* : Developer feature branches (short lived)
-  - dev       : Integration branch; auto-deploys to Dev environment
-  - qa        : Promotion from dev; deploys to QA environment
-  - release   : Branch used to deploy to Production; after successful deploy it is promoted/merged into main
-  - main      : Canonical production history; protected
+1. **Enable Diagnostic Logging**:
+    - Navigate to **Azure Portal** → **Key Vault** → **Diagnostic settings** → **Add diagnostic setting**.
+    - Configure an audit log destination such as:
+        - **Log Analytics Workspace** for querying logs.
+        - **Azure Storage** for long-term archival.
+        - **Event Hub** for real-time monitoring.
+    - Enable the following logging categories:
+        - **AuditEvent**: Tracks secret access operations.
+        - **AllMetrics**: Tracks overall Key Vault performance.
 
-- Promotion flow summary:
-  1. Developer creates feature/* branch and opens PR into dev.
-  2. After review & CI, feature is merged into dev and deployments to Dev run automatically.
-  3. Create PR dev -> qa, run integration tests and reviews; merge triggers QA deployments.
-  4. Create or update release branch from qa; pushes to release trigger Production workflow which is gated with manual environment approval.
-  5. After successful production deploy, create/automate PR release -> main and merge with tags.
+2. **Set Up Alerts**:
+    - Use **Azure Monitor** to create alert rules.
+    - Example conditions:
+        - Unauthorized access attempts.
+        - Suspicious IP addresses accessing Key Vault secrets.
 
-- Environments and secrets:
-  - Use GitHub Environments: dev, qa, production. Store credentials as environment secrets.
-  - Non-sensitive environment-specific values (database names, schemas, warehouse sizes) live in configs/*.yml in the repo.
+3. **Query Logs**:
+    Use Azure Log Analytics to investigate secret access, e.g.:
+    ```kql
+    AzureDiagnostics
+    | where Resource == "kv-dev"
+    | where OperationName == "SecretGet"
+    | summarize AccessCount=count() by CallerIPAddress, Caller
+    | sort by AccessCount desc
+    ```
 
-- Migration tooling:
-  - A simple SQL runner is included as an example. For production, consider migrating to Flyway, Liquibase or dbt.
+---
+
+### Snowflake Query Logs
+1. **Audit Queries**:
+    Use the `QUERY_HISTORY` view to analyze executed SQL, e.g.:
+    ```sql
+    SELECT *
+    FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+    WHERE QUERY_TEXT ILIKE '%DROP%';
+    ```
+
+2. **Set Up Alerts**:
+    Utilize Snowflake Tasks to perform automated query auditing and alerting based on query patterns.
