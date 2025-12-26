@@ -1,86 +1,58 @@
-# Key Rotation Runbook — Snowflake CI private keys (per-environment)
+# Snowflake Key Rotation Runbook
 
-Purpose
-- Document the safe procedure to rotate the RSA private/public key pair used by GitHub Actions -> Azure Key Vault -> Snowflake CI users.
-- This is the per-environment process. Repeat for dev, qa, prod.
+## 1. Generate new key pair
+Use OpenSSL or another appropriate tool to generate an RSA key pair. Ensure the private key is securely stored and encrypted with a passphrase.
 
-Assumptions
-- Environment name = <env> (dev/qa/prod)
-- Snowflake CI user = gitops_ci_<env> (example: gitops_ci_prod)
-- Key Vault = kv-<env>
-- Key Vault secret name = SNOWFLAKE_PRIVATE_KEY_BASE64
-- You have access to Snowflake admin + Key Vault contributor + Azure app owner for gitops-ci-<env>
+```bash
+openssl genrsa -aes256 -out rsa_key.pem 2048
+openssl rsa -in rsa_key.pem -pubout -out rsa_key.pub
+```
 
-High-level safe rotation steps (no downtime preferred)
-1) Generate new key pair (admin machine)
-   - Generate a new RSA key pair (PKCS#8 PEM for private, public PEM for Snowflake):
-     ```bash
-     openssl genpkey -algorithm RSA -out rsa_new.pem -pkeyopt rsa_keygen_bits:2048
-     openssl rsa -pubout -in rsa_new.pem -out rsa_new.pub
-     openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in rsa_new.pem -out rsa_new_pkcs8.pem
-     base64 -w0 rsa_new_pkcs8.pem > rsa_new_pkcs8.pem.base64   # linux
-     ```
-   - Keep private files offline and secure.
+## 2. Stage public key in Snowflake
+Upload the public key to Snowflake as a secondary key for seamless rotation:
 
-2) Stage public key in Snowflake (test method)
-   - If Snowflake supports a secondary key mechanism, add the new public key as a secondary key and test switching. If not, coordinate cutover (see below).
-   - Example (if direct replace is required):
-     - Notify stakeholders of short maintenance window (if necessary).
-     - Run:
-       ```sql
-       ALTER USER gitops_ci_<env> SET RSA_PUBLIC_KEY = '<contents-of-rsa_new.pub>';
-       ```
-     - Alternatively, create a second user (gitops_ci_<env>_rot) for testing, set its RSA_PUBLIC_KEY to the new pubkey, grant same role, and test.
+```sql
+ALTER USER gitops_ci_<env> SET RSA_PUBLIC_KEY_2 = '<contents-of-rsa_new.pub>';
+```
 
-3) Update Key Vault secret
-   - Update the Key Vault secret value with the new base64 private key:
-     ```bash
-     az keyvault secret set --vault-name kv-<env> --name SNOWFLAKE_PRIVATE_KEY_BASE64 --value "$(cat rsa_new_pkcs8.pem.base64)"
-     ```
-   - Key Vault will version the secret; keep the old version for rollback.
+Rollback guidance for clearing secondary keys if required:
 
-4) Test pipeline (dev/qa first)
-   - Trigger the pipeline for the environment (or run the workflow manually).
-   - Verify the runner obtains the new secret, connects successfully to Snowflake, and migrations (or a simple readonly query) succeed.
-   - Inspect Key Vault access logs for the retrieval and Snowflake audit logs for auth events.
+```sql
+ALTER USER gitops_ci_<env> UNSET RSA_PUBLIC_KEY_2;
+```
 
-5) Cutover (if direct public-key replacement required)
-   - If using a single Snowflake user and altering the RSA_PUBLIC_KEY in place:
-     - Update Snowflake public key (see step 2).
-     - Immediately update Key Vault secret (step 3).
-     - Trigger pipeline and confirm connectivity.
-     - If failure, roll back by restoring Key Vault secret to previous value (az keyvault secret set with previous base64) or revert Snowflake public key.
+## 3. Update Key Vault secret
+Update the private key and passphrase in Azure Key Vault. Ensure both are updated atomically:
 
-6) Rollback plan
-   - If the new key fails:
-     - Old Key Vault secret version is still available; retrieve old value and set it as the current secret:
-       ```bash
-       az keyvault secret list-versions --vault-name kv-<env> --name SNOWFLAKE_PRIVATE_KEY_BASE64
-       az keyvault secret set --vault-name kv-<env> --name SNOWFLAKE_PRIVATE_KEY_BASE64 --value "<old-base64-value>"
-       ```
-     - Or restore the previous Snowflake public key from your backup and notify stakeholders.
+```bash
+az keyvault secret set --vault-name kv-<env> --name SNOWFLAKE_PRIVATE_KEY --file rsa_key.pem
+az keyvault secret set --vault-name kv-<env> --name SNOWFLAKE_PRIVATE_KEY_PASSPHRASE --value "<new-passphrase>"
+```
 
-7) Clean up
-   - Securely archive or destroy old private key material (do not leave old private keys on disk).
-   - Record rotation event in change log: who rotated, when, secret versions, Snowflake ALTER USER statement used.
+## 4. Test pipeline
+Trigger the CI/CD pipeline for verification. Ensure both old and new keys are functioning if using secondary key rotation.
+Enhanced testing includes automated verification:
 
-Checklist (pre-rotation)
-- [ ] Notify stakeholders and schedule maintenance window (if necessary)
-- [ ] Ensure you have admin access to Snowflake and Key Vault
-- [ ] Backup current Snowflake public key and Key Vault secret version id
-- [ ] Generate new key pair and securely store offline
-- [ ] Prepare a test plan for pipeline verification
+```bash
+gh run workflow --name "test-migration" --env dev
+```
 
-Checklist (post-rotation)
-- [ ] Confirm pipeline artifacts run successfully with new key
-- [ ] Check Key Vault logs for secret access events
-- [ ] Check Snowflake audit logs for auth success on gitops_ci_<env>
-- [ ] Document rotation in runbook (include secret version IDs)
-- [ ] Destroy old private key file from any temporary machines
+Check the pipeline logs for any authentication errors or warnings.
 
-Notes and tips
-- Prefer to rotate dev/qa first, verify, then rotate production.
-- Consider creating a secondary Snowflake CI user for staged cutover to avoid single-user lockstep when Snowflake does not support multiple keys per user.
-- Automate rotation verification using a small test job in the pipeline that validates authentication but does not run destructive migrations.
+## 5. Promote new key
+Remove the old key from Snowflake and promote the new key to primary:
 
-End of runbook.
+```sql
+ALTER USER gitops_ci_<env> SET RSA_PUBLIC_KEY = '<contents-of-rsa_new.pub>';
+ALTER USER gitops_ci_<env> UNSET RSA_PUBLIC_KEY_2;
+```
+
+## 6. Rollback Plan
+If any issues are encountered, revert back to the old key and document all rollback attempts.
+Ensure Azure Key Vault logging is enabled to trace changes:
+
+```bash
+az keyvault diagnostic-settings create --name "LogToLogAnalytics" --vault-name kv-<env> --workspace /subscriptions/<sub_id>/resourceGroups/<rg_name>/providers/Microsoft.OperationalInsights/workspaces/<workspace_name>
+```
+
+Review Snowflake query history to ensure no unauthorized access has occurred during the rotation process.
