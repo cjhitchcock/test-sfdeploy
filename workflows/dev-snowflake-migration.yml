@@ -3,7 +3,7 @@ name: Dev Snowflake Pipeline
 on:
   push:
     branches:
-      - cjh-research
+      - dev
   workflow_dispatch:
 
 jobs:
@@ -14,10 +14,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Login to Azure using Managed Identity
+      - name: Login to Azure
         uses: azure/login@v1
         with:
-          managed-identity: true
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Fetch Secrets from Azure Key Vault
         uses: azure/get-keyvault-secrets@v1
@@ -37,7 +39,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Execute Snowflake Migrations with Retry
         run: |
