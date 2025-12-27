@@ -13,13 +13,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - Updated `sql-runner.py`:
-  - Improved logging for SQL migrations to include file-specific execution details.
+  - Added command-line argument support for specifying migrations directory.
+  - Added sorting of SQL files to ensure consistent execution order.
+  - Added file type checking to only process .sql files.
+  - Improved logging to record the path of each executed SQL file.
   - Added schema validation stub for pre-migration checks.
-  - Implemented retry logic for transient Snowflake errors.
 - Updated `.github/workflows/dev-snowflake-migration.yml`:
-  - Switched to Managed Identity for Azure.
+  - Switched to OIDC authentication with Azure (client-id, tenant-id, subscription-id).
+  - Changed branch trigger from `cjh-research` to `dev`.
   - Pinned runner to `ubuntu-22.04`.
-  - Added retry logic for migrations.
+  - Added retry logic in the workflow bash script for transient errors during migrations.
+  - Made requirements.txt installation conditional.
+- Updated `scripts/create-azure-env.sh`:
+  - Fixed secret name from `SNOWFLAKE_PRIVATE_KEY` to `SNOWFLAKE_PRIVATE_KEY_BASE64`.
+  - Added output suppression to prevent secret values from appearing in logs.
+  - Added documentation for required environment variables.
 
 ---
 

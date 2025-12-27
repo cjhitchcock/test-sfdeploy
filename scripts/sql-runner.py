@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -19,10 +20,13 @@ def validate_schema():
     logger.info("Schema validation completed successfully.")
 
 if __name__ == "__main__":
-    migrations_dir = "sql/migrations"
+    # Accept migrations directory as command-line argument
+    migrations_dir = sys.argv[1] if len(sys.argv) > 1 else "sql/migrations"
     validate_schema()
     
-    for sql_file in os.listdir(migrations_dir):
+    # Sort files to ensure consistent execution order
+    for sql_file in sorted(os.listdir(migrations_dir)):
         sql_file_path = os.path.join(migrations_dir, sql_file)
-        if sql_file.endswith(".sql"):
+        # Check if it's a file and ends with .sql
+        if os.path.isfile(sql_file_path) and sql_file.endswith(".sql"):
             execute_sql_file(sql_file_path)

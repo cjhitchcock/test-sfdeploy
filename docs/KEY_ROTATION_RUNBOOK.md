@@ -34,7 +34,7 @@ Trigger the CI/CD pipeline for verification. Ensure both old and new keys are fu
 Enhanced testing includes automated verification:
 
 ```bash
-gh run workflow --name "test-migration" --env dev
+gh workflow run "test-migration" --ref dev
 ```
 
 Check the pipeline logs for any authentication errors or warnings.
